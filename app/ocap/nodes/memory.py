@@ -130,17 +130,12 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
                     workflow_data = json.loads(workflow_data_str)
                     
                     # Extract relevant information for LLM summarization
+                    # Only include query, response, and classification (no Elasticsearch results)
                     interaction = {
                         "query": workflow_data.get("query", ""),
                         "response": workflow_data.get("response", ""),
-                        "classification": workflow_data.get("classification"),
-                        "formatted_text": ""
+                        "classification": workflow_data.get("classification")
                     }
-                    
-                    # Extract formatted_text from classify_results
-                    classify_results = workflow_data.get("classify_results", {})
-                    if isinstance(classify_results, dict):
-                        interaction["formatted_text"] = classify_results.get("formatted_text", "")
                     
                     # Extract registry_matches from metadata for historical tracking
                     workflow_metadata = workflow_data.get("metadata", {})
@@ -151,6 +146,7 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
                         historical_entry = {
                             "workflow_run_id": workflow_run_id,
                             "query": workflow_data.get("query", ""),
+                            "response": workflow_data.get("response", ""),
                             "classification": workflow_data.get("classification"),
                             "registry_matches": registry_matches,
                             "created_at": workflow_data.get("created_at", "")

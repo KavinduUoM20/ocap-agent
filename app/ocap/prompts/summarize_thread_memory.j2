@@ -10,10 +10,6 @@ Interaction {{ loop.index }}:
 - Query: {{ interaction.query }}
 - Response: {{ interaction.response }}
 - Classification: {{ interaction.classification }}
-{% if interaction.formatted_text %}
-- Elasticsearch Results:
-{{ interaction.formatted_text }}
-{% endif %}
 {% endfor %}
 {% else %}
 No previous interactions found in this thread.
@@ -29,7 +25,6 @@ Instructions:
 Generate a concise summary that captures the essence of previous interactions in this thread. Focus on:
 - What questions were asked
 - What answers were provided
-- What information was retrieved from Elasticsearch
 - Any patterns or progression in the conversation
 - Key manufacturing concepts, operations, defects, errors, or styles mentioned
 

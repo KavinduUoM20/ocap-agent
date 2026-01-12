@@ -12,6 +12,7 @@ Historical Registry Matches from Previous Turns (Most Recent First):
 ---
 Turn {{ loop.index }} (Workflow: {{ historical_entry.workflow_run_id }}):
 - Query: {{ historical_entry.query }}
+- Response: {{ historical_entry.response }}
 - Classification: {{ historical_entry.classification }}
 - Registry Matches: {{ historical_entry.registry_matches }}
 - Created At: {{ historical_entry.created_at }}
@@ -62,14 +63,61 @@ Instructions:
    - Check confidence scores for each match
    - Determine what classification the current query would have on its own
 
-2. **Evaluate Historical Context Relevance**: 
+2. **Evaluate Historical Context Relevance - CRITICAL ANALYSIS**: 
+   **STEP 1: Check if current query is selecting from a previous response - MOST CRITICAL STEP**
+   - **MOST IMPORTANT**: Check if the current query matches (exactly OR semantically/partially) an item mentioned in previous turn's RESPONSE
+   - Look at the Response field in historical entries - responses may list options (errors, defects, operations, styles) in various formats:
+     * Numbered format: "1. incorrect thread tension (15 cases), 2. improper needle size..."
+     * Bullet format: "- incorrect thread tension (15 cases), - improper needle size..."
+     * Plain list: "incorrect thread tension (15 cases), improper needle size (10 cases)..."
+     * With labels: "The following errors: incorrect thread tension (15 cases), improper needle size..."
+   - **Connection Detection Rules - BE FLEXIBLE WITH FORMAT:**
+     * Parse the Response text to extract all listed items (errors, defects, operations, styles)
+     * Items may appear after phrases like "caused by:", "related to:", "errors:", "defects:", "operations:", "styles:", "actions:"
+     * Items may be separated by commas, newlines, or listed as separate lines
+     * Extract the core item name (remove case counts, formatting, numbers, bullets)
+     * Compare current query to each extracted item name (exact match, partial match, or semantic match)
+     * **If ANY match is found, this is a FOLLOW-UP selection**
+   - **How to Extract Items from Response:**
+     * Look for patterns like: "item name (X cases)", "1. item name", "- item name", "item name,"
+     * Extract the core name: "incorrect thread tension" from "incorrect thread tension (15 cases)" or "1. incorrect thread tension"
+     * Remove: numbers (1., 2.), bullets (-, •), case counts "(X cases)", extra formatting
+     * Compare: current query "incorrect thread tension" with extracted "incorrect thread tension" → MATCH ✓
+   - **Examples of follow-up detection:**
+     * Previous Response: "Broken stitches can be caused by the following errors: incorrect thread tension (15 cases), improper needle size (10 cases), incorrect stitch length (8 cases)"
+       → Extract: ["incorrect thread tension", "improper needle size", "incorrect stitch length"]
+       → Current: "incorrect thread tension" → MATCHES first item → FOLLOW-UP ✓
+     * Previous Response: "1. incorrect thread path (20 cases), 2. wrong stitch length..."
+       → Extract: ["incorrect thread path", "wrong stitch length"]
+       → Current: "incorrect thread path" → MATCHES first item → FOLLOW-UP ✓
+     * Previous Response: "incorrect thread tension (15 cases)" (even without numbers)
+       → Extract: ["incorrect thread tension"]
+       → Current: "incorrect thread tension" or "incorrect thread tension (" → MATCHES → FOLLOW-UP ✓
+     * Previous Response: "1. broken stitch..." → Current: "broken stitch issue" → Semantic match → FOLLOW-UP ✓
+   - **CRITICAL**: If this is a follow-up selection, you MUST merge historical context REGARDLESS of current query's classification (even if error-precise/precise)
+   - **CRITICAL**: Even if current query has partial match (confidence < 100), if it's selecting from previous response, merge is REQUIRED
+   - **CRITICAL**: The response format may vary - always parse and extract items, don't rely on specific formatting
+   
+   **STEP 2: Evaluate based on current query completeness**
    - If current query is already **precise** (has defect + operation + style, all confidence 100):
-     - Historical registry matches are likely NOT needed
+     - **UNLESS** it's a follow-up selection from previous response → Then merge with historical context
+     - If NOT a follow-up: Historical registry matches are likely NOT needed
      - The query is complete on its own
      - Classify as precise based on current matches only
    
+   - If current query is **error-precise** (has error with confidence 100) OR has error match with confidence < 100:
+     - **CRITICALLY CHECK**: Is this error mentioned in previous turn's response as a listed option?
+     - **IF YES (follow-up selection)**: You MUST merge with historical context
+       * Merge historical registry_matches (defect, operation, style) with current error
+       * This creates a more complete context (e.g., defect + error, or operation + error)
+       * Classification may change to non-precise or precise depending on merged node_types
+     - **IF NO (not a follow-up)**: Historical registry matches are likely NOT needed
+     - The query is complete on its own only if NOT a follow-up
+     - Classify based on merged context if follow-up, otherwise use current matches only
+   
    - If current query is **non-precise** (has 1-2 node types, or incomplete):
      - **CRITICALLY IMPORTANT**: Check if historical_registry_matches from recent turns can complete it
+     - Also check if previous responses provide context that should be merged
      - Look at the most recent historical entries first
      - If historical matches add missing node_types that would make it precise:
        - Consider merging the context: current + historical registry_matches
@@ -96,15 +144,122 @@ Instructions:
      c) Conversation context from thread_memory_summary
    - Choose the classification that best represents the complete query intent
 
-5. **Reasoning Requirements**:
-   - Explicitly state whether you used historical registry_matches or not
-   - Explain why historical matches were or weren't relevant
-   - If you merged historical matches, explain which node_types came from history
-   - If current query is already precise, explain why history wasn't needed
+5. **Registry Merge Decision - CRITICAL**:
+   You must decide whether to merge historical_registry_matches with current registry_matches to create a `classification_registry`.
+   
+   **Merge Criteria (merge if ANY of these are true):**
+   
+   **Scenario A: Follow-up Selection from Previous Response - HIGHEST PRIORITY**
+   - Previous turn's Response listed options (errors, defects, operations, styles) - format may vary (numbered, bulleted, plain list)
+   - **CRITICAL**: Parse the Response text to extract all listed items, regardless of formatting
+   - Current query mentions (exactly OR semantically/partially) one of those extracted items
+   - **Connection can be:**
+     * Exact match: Previous Response contains "incorrect thread tension" → Current "incorrect thread tension" ✓
+     * Partial match: Previous Response contains "incorrect thread tension" → Current "incorrect thread tension (" ✓ (incomplete)
+     * Semantic match: Previous Response contains "incorrect thread tension" → Current "thread tension issue" ✓ (similar meaning)
+   - **How to detect:**
+     * Read the Response field from historical_registry_matches
+     * Extract all item names from the response (remove formatting, case counts, numbers)
+     * Compare current query to each extracted item
+     * If match found → This is a clear follow-up where user is selecting from previous options
+   - **ALWAYS merge in this case**, even if:
+     * Current query is already precise/error-precise
+     * Current match has confidence < 100 (partial match)
+     * Current query seems complete on its own
+     * Response format is not perfectly numbered (may be plain list, bulleted, etc.)
+   - Merge to include ALL context from previous turn (operation, defect, style, etc.) + current query's matches
+   - **Example 1**: Previous query: "What causes broken stitch in join inseam operation?"
+     Previous response: "Broken stitches can be caused by the following errors: incorrect thread tension (15 cases), improper needle size (10 cases)..."
+     Current query: "incorrect thread tension"
+     → Extract from response: ["incorrect thread tension", "improper needle size"]
+     → Current matches first item → FOLLOW-UP → Merge: [defect: "broken stitch" from history] + [operation: "join inseam" from history] + [error: "incorrect thread tension" from current]
+   - **Example 2**: Previous response listed "1. incorrect thread path (20 cases)..." → Current "incorrect thread path" → Merge historical context + current error
+   
+   **Scenario B: Completing Incomplete Query**
+   - Current query is non-precise (has 1-2 node types, incomplete)
+   - Historical registry_matches from recent turns add missing node_types
+   - The connection between current and historical queries is clear and logical
+   - Merging would make the query precise or error-precise
+   
+   **Do NOT merge if:**
+   - Current query is already precise/error-precise AND it's NOT a follow-up selection from previous response AND current query doesn't match anything in previous response
+   - Historical matches don't add relevant missing node_types AND it's not a follow-up selection AND current query doesn't match anything in previous response
+   - Current and historical queries are completely unrelated AND current query doesn't appear in any previous response
+   
+   **CRITICAL EXCEPTION**: Even if current query seems complete (precise/error-precise), if it matches an item from previous response, you MUST merge
+   
+   **Special Case: Follow-up Selection**
+   - Example: Previous response: "1. incorrect thread path (20 cases), 2. wrong stitch length..."
+   - Current query: "incorrect thread path"
+   - This is a follow-up → Merge historical context (operation, defect, etc.) with current error
+   - Result: classification_registry includes both the error from current query AND context from previous turn
+   
+   **Merge Process (if merging):**
+   - Combine current + historical registry_matches
+   - Deduplicate: if same (node_type, value) exists, keep the one with higher confidence
+   - If same confidence, prefer exact match over partial match
+   - If same match_type, prefer current over historical
+   - Result: `classification_registry` = merged set
+   
+   **No Merge (if not merging):**
+   - `classification_registry` = current registry_matches only
+   
+   **Examples:**
+   - Example 1 (Merge - Completing): Current has [defect], Historical has [operation] → Merge to [defect, operation]
+   - Example 2 (Merge - Follow-up Selection): Previous response listed "1. incorrect thread path (20 cases)...", Current query is "incorrect thread path" (error-precise) → Merge to include historical [operation] + current [error]
+   - Example 3 (Merge - Follow-up with Plain List Format - CRITICAL EXAMPLE): 
+     * Previous query: "What causes broken stitch in join inseam operation?"
+     * Previous response: "Broken stitches in the join inseam operation can be caused by the following errors: incorrect thread tension (15 cases), improper needle size (10 cases), incorrect stitch length (8 cases)"
+     * Extract from response: ["incorrect thread tension", "improper needle size", "incorrect stitch length"]
+     * Current query: "incorrect thread tension"
+     * → Current matches first extracted item → FOLLOW-UP → **MUST merge**
+     * → Merge: [defect: "broken stitch" from historical registry_matches] + [operation: "join inseam" from historical registry_matches] + [error: "incorrect thread tension" from current]
+     * → Result: classification_registry includes defect, operation, and error
+   - Example 3b (Merge - Follow-up with Partial Match): Previous response listed "1. incorrect thread tension (15 cases)" for "broken stitch", Current query is "incorrect thread tension" or "incorrect thread tension (" (partial match, confidence 80) → **MUST merge** [defect: "broken stitch" from history] + [error: "incorrect thread tension" from current]
+   - Example 4 (Merge - Follow-up Semantic Match): Previous response listed "1. broken stitch...", Current query is "broken stitch issue" → Merge historical context + current
+   - Example 5 (No Merge): Current has [defect, operation, style] and NOT a follow-up and doesn't match previous response → Use current only
+   - Example 6 (No Merge): Current has [defect], Historical has [defect] (duplicate) and NOT a follow-up and doesn't match previous response → Use current only
+   - Example 7 (Merge - Follow-up): Previous response listed errors for "collar close operation", Current query selects one error → Merge to include [operation: "collar close"] from history + [error] from current
+
+6. **Reasoning Requirements**:
+   - **FIRST AND MOST IMPORTANT**: Parse and check if current query matches (exactly, partially, or semantically) any item in previous turn's RESPONSE
+   - **How to check:**
+     * Read the Response field from each historical entry
+     * Extract all listed items (errors, defects, operations, styles) from the response text
+     * Remove formatting (numbers, bullets, case counts) to get core item names
+     * Compare current query to each extracted item name
+     * If ANY match found → This is a follow-up selection → You MUST merge, regardless of current classification
+   - **If match found in previous response**: 
+     * Clearly state: "Current query '[X]' matches item '[Y]' extracted from previous response '[response snippet]'"
+     * Explain how you extracted the item from the response (what format it was in)
+     * Explain how current query relates to extracted item (exact match, partial match, semantic match)
+     * Explain that this is a follow-up selection requiring merge
+     * State: "This is a follow-up selection - user is choosing from the list provided in previous response"
+   - **If no match found**: 
+     * State: "Checked previous response(s) - current query does not match any listed items"
+     * Explain why merge was or wasn't applied based on other criteria
+   - Explicitly state whether you merged historical registry_matches or not
+   - Explain why merge was or wasn't applied
+   - If merged, explain which node_types came from history and why
+   - If not merged, explain why (current complete, unrelated, not a follow-up, doesn't match previous response, etc.)
    - Provide clear, detailed reasoning for your classification decision
+   - **CRITICAL**: Parse responses flexibly - items may be in numbered format, bulleted, or plain list
+   - **CRITICAL**: If previous response listed options (in any format) and current query matches (even partially) one of them, you MUST acknowledge this as a follow-up and merge accordingly
+   - **CRITICAL**: Even if current query is error-precise with partial match (confidence < 100), if it's selecting from previous response, merge is REQUIRED
 
 Output format (JSON only, no additional text):
 {
   "classification": "precise" | "error-precise" | "non-precise" | "generic",
-  "reasoning": "Detailed explanation that MUST include: (1) Analysis of current registry_matches, (2) Whether historical_registry_matches were used and why/why not, (3) If historical matches were used, which node_types came from history, (4) Rational decision-making process, (5) Final classification justification based on complete context"
+  "reasoning": "Detailed explanation that MUST include: (1) Analysis of current registry_matches, (2) Whether historical_registry_matches were merged and why/why not, (3) If merged, which node_types came from history, (4) Rational decision-making process, (5) Final classification justification",
+  "classification_registry": [
+    {
+      "node_type": "defect" | "operation" | "style" | "error",
+      "value": "string",
+      "match_type": "exact" | "partial",
+      "confidence": 0-100,
+      "source": "current" | "historical" | "merged"
+    }
+  ],
+  "merge_applied": true | false,
+  "merge_reasoning": "Brief explanation of why merge was or wasn't applied (1-2 sentences)"
 }

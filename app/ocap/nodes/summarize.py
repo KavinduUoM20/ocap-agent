@@ -37,16 +37,28 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
     metadata = state.get("metadata") or {}
     
     # Extract information from metadata
-    registry_matches = metadata.get("registry_matches", [])
     query_spec_summary = metadata.get("query_spec_summary", "")
     thread_memory_summary = metadata.get("thread_memory_summary")
     classify_results = metadata.get("classify", {})
     classify_formatted_text = classify_results.get("formatted_text", "")
     
+    # Get classification_registry from analysis metadata (merged registry if merge was applied)
+    analysis_metadata = metadata.get("analysis", {})
+    classification_registry = analysis_metadata.get("classification_registry")
+    merge_applied = analysis_metadata.get("merge_applied", False)
+    merge_reasoning = analysis_metadata.get("merge_reasoning", "")
+    analysis_reasoning = analysis_metadata.get("reasoning", "")
+    
+    # Fallback to registry_matches if classification_registry not available
+    if not classification_registry:
+        classification_registry = metadata.get("registry_matches", [])
+    
     logger.info(
         f"Generating summary response for query: {query[:50]}... "
         f"(classification: {classification}, "
-        f"thread_memory: {'Available' if thread_memory_summary else 'None'})"
+        f"thread_memory: {'Available' if thread_memory_summary else 'None'}, "
+        f"merge_applied: {merge_applied}, "
+        f"classification_registry_count: {len(classification_registry) if classification_registry else 0})"
     )
     
     if not classification:
@@ -67,7 +79,10 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
             query=query,
             classification=classification,
             query_spec_summary=query_spec_summary,
-            registry_matches=registry_matches,
+            classification_registry=classification_registry,
+            merge_applied=merge_applied,
+            merge_reasoning=merge_reasoning,
+            analysis_reasoning=analysis_reasoning,
             thread_memory_summary=thread_memory_summary,
             classify_formatted_text=classify_formatted_text
         )
@@ -87,15 +102,15 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert manufacturing assistant. Analyze the provided information and generate a helpful, clear response to the user's query. CRITICALLY IMPORTANT: If thread_memory_summary is provided, check if the current query relates to previous conversation. If it does, acknowledge the connection naturally at the start of your response. If information is lacking, politely ask for clarification. If information is sufficient, provide a clear answer with numbered lists and case counts when applicable."
+                    "content": "You are an expert manufacturing assistant. Generate a helpful, clear, and CONCISE response. CRITICAL RULES: (1) Use proper terminology: 'errors', 'defects', 'operations', 'styles', 'actions' - NOT 'issues', 'problems', 'things', 'items'. (2) When listing items, clearly state the type (e.g., 'The following errors:', 'Available defects:'). (3) When multiple options exist, ask which one is relevant (e.g., 'Which error is affecting you?'). (4) Always include actions when available - users seek actionable help. (5) Use analysis metadata (merge_applied) to determine if acknowledgment is needed. (6) Use numbered lists with case counts. Be precise and brief - remove verbose phrases."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.6,  # Slightly creative but still focused
-            max_tokens=800,  # Allow more tokens for structured numbered lists
+            temperature=0.5,  # Lower temperature for more focused, precise responses
+            max_tokens=600,  # Reduced for more concise responses while maintaining structure
         )
         
         # Extract response content

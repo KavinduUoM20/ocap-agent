@@ -87,17 +87,39 @@ def _classify_with_llm(
                 logger.warning("Could not parse LLM response, defaulting to non-precise")
                 return {
                     "classification": "non-precise",
-                    "reasoning": "Could not parse LLM response"
+                    "reasoning": "Could not parse LLM response",
+                    "classification_registry": registry_matches,  # Fallback to current
+                    "merge_applied": False,
+                    "merge_reasoning": "Fallback: LLM response parsing failed"
                 }
         
         classification = result.get("classification", "non-precise")
         reasoning = result.get("reasoning", "")
+        classification_registry = result.get("classification_registry")
+        merge_applied = result.get("merge_applied", False)
+        merge_reasoning = result.get("merge_reasoning", "")
         
-        logger.info(f"LLM classification: {classification}, reasoning: {reasoning[:100]}...")
+        # Validate classification_registry
+        if not classification_registry or not isinstance(classification_registry, list):
+            # Fallback: use current registry_matches if LLM didn't provide classification_registry
+            logger.warning("LLM did not provide classification_registry, using current registry_matches as fallback")
+            classification_registry = registry_matches
+            merge_applied = False
+            merge_reasoning = "Fallback: using current registry_matches only"
+        
+        logger.info(
+            f"LLM classification: {classification}, "
+            f"merge_applied: {merge_applied}, "
+            f"classification_registry_count: {len(classification_registry) if classification_registry else 0}, "
+            f"reasoning: {reasoning[:100]}..."
+        )
         
         return {
             "classification": classification,
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "classification_registry": classification_registry,
+            "merge_applied": merge_applied,
+            "merge_reasoning": merge_reasoning
         }
         
     except Exception as e:
@@ -105,7 +127,10 @@ def _classify_with_llm(
         # Fallback to non-precise if LLM fails
         return {
             "classification": "non-precise",
-            "reasoning": f"LLM classification failed: {str(e)}"
+            "reasoning": f"LLM classification failed: {str(e)}",
+            "classification_registry": registry_matches,  # Fallback to current
+            "merge_applied": False,
+            "merge_reasoning": f"Fallback: LLM error - {str(e)}"
         }
 
 
@@ -156,19 +181,35 @@ def analyze_query(state: OCAPState) -> Dict[str, Any]:
         
         classification = llm_result.get("classification", "non-precise")
         reasoning = llm_result.get("reasoning", "")
+        classification_registry = llm_result.get("classification_registry", registry_matches)
+        merge_applied = llm_result.get("merge_applied", False)
+        merge_reasoning = llm_result.get("merge_reasoning", "")
+        
+        # Ensure classification_registry is valid (fallback to current if not)
+        if not classification_registry or not isinstance(classification_registry, list):
+            logger.warning("Invalid classification_registry from LLM, using current registry_matches")
+            classification_registry = registry_matches
+            merge_applied = False
         
         # Build analysis metadata
         analysis_metadata = {
             "classification": classification,
             "reasoning": reasoning,
             "registry_match_count": len(registry_matches),
+            "classification_registry_count": len(classification_registry),
             "node_types_found": list(set(m.get("node_type", "") for m in registry_matches if m.get("node_type"))),
+            "classification_registry_node_types": list(set(m.get("node_type", "") for m in classification_registry if m.get("node_type"))),
             "confidence_scores": [m.get("confidence", 0) for m in registry_matches],
             "classification_method": "llm-based",
             "thread_memory_used": thread_memory_summary is not None,
             "historical_registry_matches_count": len(historical_registry_matches) if historical_registry_matches else 0,
-            "historical_context_used": len(historical_registry_matches) > 0 if historical_registry_matches else False
+            "historical_context_used": len(historical_registry_matches) > 0 if historical_registry_matches else False,
+            "merge_applied": merge_applied,
+            "merge_reasoning": merge_reasoning
         }
+        
+        # Store classification_registry in metadata for use by classify node
+        analysis_metadata["classification_registry"] = classification_registry
         
         # Add detailed match breakdown
         if registry_matches:
@@ -187,11 +228,16 @@ def analyze_query(state: OCAPState) -> Dict[str, Any]:
         logger.info(
             f"Query classified as: {classification} "
             f"(method: {analysis_metadata['classification_method']}, "
-            f"matches: {len(registry_matches)}, "
-            f"node_types: {analysis_metadata['node_types_found']}, "
+            f"current_matches: {len(registry_matches)}, "
+            f"classification_registry: {len(classification_registry)}, "
+            f"merge_applied: {merge_applied}, "
+            f"node_types: {analysis_metadata['node_types_found']} → {analysis_metadata['classification_registry_node_types']}, "
             f"historical_workflows: {analysis_metadata['historical_registry_matches_count']}, "
             f"reasoning: {reasoning[:200]}...)"
         )
+        
+        if merge_applied:
+            logger.info(f"Registry merge applied: {merge_reasoning}")
         
         # Log full reasoning for debugging
         logger.debug(f"Full classification reasoning: {reasoning}")

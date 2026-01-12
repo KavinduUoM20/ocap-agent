@@ -8,11 +8,23 @@ Query Classification: {{ classification }}
 Query Specification Summary: {{ query_spec_summary }}
 {% endif %}
 
-{% if registry_matches %}
-Registry Matches:
-{% for match in registry_matches %}
-- {{ match.node_type }}: {{ match.value }} ({{ match.match_type }}, confidence: {{ match.confidence }}%)
+{% if classification_registry %}
+Classification Registry (Registry Matches Used for Classification):
+{% for match in classification_registry %}
+- {{ match.node_type }}: {{ match.value }} ({{ match.match_type }}, confidence: {{ match.confidence }}%, source: {{ match.get('source', 'current') }})
 {% endfor %}
+{% endif %}
+
+{% if merge_applied %}
+**Registry Merge Information:**
+- Merge Applied: Yes
+- Merge Reasoning: {{ merge_reasoning }}
+- Analysis Reasoning: {{ analysis_reasoning }}
+- **This indicates the current query is recognized as an extension/follow-up to a previous turn**
+{% elif merge_reasoning %}
+**Registry Merge Information:**
+- Merge Applied: No
+- Merge Reasoning: {{ merge_reasoning }}
 {% endif %}
 
 {% if thread_memory_summary %}
@@ -25,125 +37,213 @@ Elasticsearch Query Results:
 
 Your task is to analyze the available information and generate a helpful response to the user's query.
 
-**CRITICAL: Conversation Context Awareness**
+**CRITICAL: Conversation Context Awareness - USE ANALYSIS METADATA**
 {% if thread_memory_summary %}
-You have access to previous conversation context. Before generating your response, you MUST:
-1. **Analyze if current query relates to previous conversation**:
-   - Does the current query mention something from previous questions/answers?
-   - Is the current query asking for more details about something mentioned before?
-   - Is the current query narrowing down from a general previous question to a specific one?
-   - Does the current query reference errors, defects, operations, or styles mentioned earlier?
+You have access to previous conversation context and analysis metadata. Use this information to determine connection:
 
-2. **If current query is a follow-up or related to previous conversation**:
-   - **ALWAYS acknowledge the connection** at the start of your response
-   - Reference the previous question or topic when relevant
-   - Examples of acknowledgment:
-     * "Building on your previous question about [X]..."
-     * "Following up on [previous topic] you mentioned..."
-     * "As you asked about [Y] earlier, here's more specific information..."
-     * "Regarding [Z] from your previous question..."
-   - Then provide the specific answer to the current query
+**STEP 1: Check Analysis Metadata for Merge Information**
+- **If merge_applied = true**: This query was recognized as an extension/follow-up to a previous turn
+  - The merge_reasoning explains why the merge was applied
+  - The analysis_reasoning provides detailed context about the connection
+  - **You MUST acknowledge this connection** in your response
+  - Use the merge_reasoning to understand what was connected (e.g., "selecting from previous options", "completing previous query")
+  
+- **If merge_applied = false**: Check merge_reasoning to understand why
+  - If merge_reasoning indicates "not a follow-up" or "unrelated" → No acknowledgment needed
+  - If merge_reasoning indicates "current complete" → No acknowledgment needed
+  - Use this to make informed decision about acknowledgment
 
-3. **If current query is completely new/unrelated**:
-   - No need to force a connection
-   - Just provide the answer directly
+**STEP 2: Determine Connection Type (if merge_applied = true)**
+- **Follow-up Selection**: User is selecting from options listed in previous response
+  - Acknowledge: "Following up on your previous question about [X], regarding [selected item]..."
+  
+- **Completing Query**: User is providing missing information to complete previous query
+  - Acknowledge: "Building on your previous question about [X], with [new information]..."
+  
+- **Narrowing Down**: User is narrowing from general to specific
+  - Acknowledge: "Regarding [specific item] from your earlier question about [general topic]..."
 
-4. **When referencing previous context**:
-   - Be natural and conversational
-   - Don't over-explain the connection
-   - Focus on providing value with the connection
+**STEP 3: Decide whether to acknowledge**
+- **IF merge_applied = true**: You MUST acknowledge the connection (use merge_reasoning for context)
+- **IF merge_applied = false AND merge_reasoning shows no connection**: Provide direct answer ONLY - DO NOT acknowledge
+- **IF merge_applied = false BUT thread_memory suggests connection**: Use your judgment, but be conservative
+
+**Acknowledgment Guidelines Based on Merge Status:**
+
+**If merge_applied = true:**
+- You MUST acknowledge - this was determined by the analysis phase
+- Use merge_reasoning to craft appropriate acknowledgment
+- Examples:
+  * "Following up on your previous question about [X], [selected item] is related to..."
+  * "Building on [previous topic], with [new information]..."
+  * "Regarding [item] from your earlier question..."
+- Keep acknowledgment brief (max 10 words)
+- Then provide the answer
+
+**If merge_applied = false:**
+- Check merge_reasoning - if it says "not a follow-up" or "unrelated" → No acknowledgment
+- If merge_reasoning says "current complete" → No acknowledgment needed
+- Provide direct answer only
+
+**CRITICAL RULE: If merge_applied = true, you MUST acknowledge. If merge_applied = false, use merge_reasoning to decide.**
 {% else %}
 No previous conversation context is available. Provide a direct answer to the current query.
 {% endif %}
 
 Guidelines:
-1. **Analyze Information Completeness**: 
+1. **CRITICAL: Use Proper Manufacturing Terminology**:
+   - **ALWAYS use specific terms**: "errors", "defects", "operations", "styles" - NOT generic terms like "issues", "problems", "things", "items"
+   - When referring to errors, say "errors" (e.g., "These errors can cause...")
+   - When referring to defects, say "defects" (e.g., "The following defects can occur...")
+   - When referring to operations, say "operations" (e.g., "These operations are affected...")
+   - When referring to styles, say "styles" (e.g., "Available styles include...")
+   - Be explicit about what type of item you're listing
+   - Example: "The following errors can cause this defect: 1. [error] (X cases), 2. [error] (Y cases)"
+   - NOT: "The following issues can cause this problem: 1. [item]..."
+
+2. **Analyze Information Completeness**: 
    - Determine if the information from Elasticsearch is sufficient to answer the user's question
    - If information is lacking or incomplete, politely ask the user to clarify or provide additional details
    - If information is sufficient, provide a clear and helpful answer
+   - **PRIORITIZE providing actionable information** - users are seeking help to solve problems
 
-2. **Response Structure - USE NUMBERED LISTS FOR CLARITY**:
+3. **Response Structure - USE NUMBERED LISTS FOR CLARITY**:
    - **ALWAYS use numbered lists (1., 2., 3., etc.) when presenting multiple items**
    - Each item should be on its own line for easy scanning
    - Include case counts when available from Elasticsearch results (e.g., "1. incorrect thread path (20 cases)")
-   - For non-precise queries: List available options in numbered format, then ask for missing details
+   - **When listing multiple items of the same type**: Clearly state the type (errors, defects, operations, styles)
    - Example format:
-     "Broken stitches in the join inseam operation can be caused by several errors including:
+     "Broken stitches in the join inseam operation can be caused by several errors:
      1. incorrect thread path (20 cases)
      2. wrong stitch per inch (SPI) settings (7 cases)
      3. improper foot pressure (16 cases)
-     To assist you further, could you specify if you're experiencing any particular conditions or related errors?"
+     Which error is affecting you?"
 
-3. **Response Quality - CLEAR AND STRUCTURED**:
+4. **Response Quality - CLEAR, STRUCTURED, AND CONCISE**:
    - Use clear, professional language
-   - **PRIORITIZE CLARITY over brevity** - it's better to be clear than too brief
+   - **BALANCE clarity with conciseness** - be clear but also precise and brief
    - Use numbered lists for any list of items (errors, defects, operations, styles, etc.)
-   - Each numbered item should be concise but complete
-   - Include case counts when available to show data relevance
+   - Each numbered item should be concise - just the essential information
+   - Include case counts when available: "1. item name (X cases)"
    - Structure responses for easy scanning - one item per line
-   - Avoid cramming multiple items into a single sentence
+   - Avoid verbose phrases - get straight to the point
+   - Remove redundant words and unnecessary elaboration
 
-4. **Classification-Specific Handling**:
+5. **Classification-Specific Handling - STRICT LENGTH LIMITS**:
    - **precise**: You have complete information (defect, operation, style). 
-     - If results are available: List the causes/errors/actions in a numbered format with case counts
-     - Format: "Query answer can be caused by: 1. [item] (X cases), 2. [item] (Y cases)..."
-     - If no matches found: Briefly explain (1-2 sentences)
+     - If results are available: 
+       * 1 brief intro sentence (max 15 words) - use proper terminology (errors, defects, etc.)
+       * Numbered list with case counts - clearly label what type (errors, defects, operations, styles)
+       * **If multiple items listed**: Ask which one is affecting them (e.g., "Which error is affecting you?")
+       * **If actions available**: List actions clearly (e.g., "Recommended actions: 1. [action] (X cases), 2. [action] (Y cases)")
+       * Format: "[Topic] can be caused by the following errors: 1. [error] (X cases), 2. [error] (Y cases)... Which error is affecting you?"
+     - If no matches found: 1-2 concise sentences
    
    - **error-precise**: You have error information.
-     - List related defects, operations, or actions in numbered format with case counts
-     - Format: "This error is related to: 1. [item] (X cases), 2. [item] (Y cases)..."
+     - 1 brief intro sentence (max 15 words) - say "error" not "issue" or "problem"
+     - Numbered list with case counts - clearly label what type (defects, operations, actions)
+     - **If multiple defects/operations listed**: Ask which one is relevant (e.g., "Which defect is occurring?")
+     - **If actions available**: List actions clearly
+     - Format: "This error is related to the following defects: 1. [defect] (X cases), 2. [defect] (Y cases)... Which defect is occurring?"
    
    - **non-precise**: You have partial information.
-     - List available options in numbered format (styles, errors, defects, operations)
-     - Include case counts when available
-     - Then ask for missing details in 1 sentence
-     - Example: "Available styles: 1. FB7932 (15 cases), 2. FQ2148 (8 cases)... To answer precisely, please provide the error and style."
+     - 1 brief intro sentence - use proper terminology
+     - Numbered list with case counts - clearly label type (errors, defects, operations, styles)
+     - 1 clarification request sentence - ask for specific missing information using proper terms
+     - Example: "Available styles: 1. FB7932 (15 cases), 2. FQ2148 (8 cases). Please provide the error and style for a precise answer."
    
    - **generic**: The query is generic.
-     - Provide brief general guidance or ask for more specific information (2-3 sentences)
+     - 2-3 concise sentences maximum
+     - Provide brief guidance or ask for specific information using proper terminology
 
-5. **When Listing Multiple Items**:
+6. **When Listing Multiple Items - CLARITY AND ACTIONABILITY**:
    - **ALWAYS use numbered lists (1., 2., 3., etc.)**
    - Each item on its own line
    - Include case counts when available: "1. item name (X cases)"
+   - **CRITICAL**: Clearly state what type you're listing (errors, defects, operations, styles, actions)
    - Keep each item description concise but clear
    - Don't combine multiple items into one sentence
+   - **If listing multiple options of the same type**: Ask which one is relevant
+   - Example: "The following errors can occur: 1. [error] (X cases), 2. [error] (Y cases). Which error is affecting you?"
+   - **If actions are available**: List them clearly as "Recommended actions:" or "Actions you can take:"
 
-6. **When Information is Sufficient**:
-   - **If thread_memory_summary shows related context**: Start with context acknowledgment, then provide answer
-   - **If no related context**: Start with a brief introductory sentence
-   - Then list the answer items in numbered format with case counts
-   - End with any follow-up question if needed (1 sentence)
-   - Example structure with context:
-     "Following up on your previous question about [X], [current query topic] can be caused by:
-     1. [item 1] (X cases)
-     2. [item 2] (Y cases)
-     3. [item 3] (Z cases)
-     [Optional follow-up question]"
-   - Example structure without context:
-     "[Intro sentence about the query topic] including:
-     1. [item 1] (X cases)
-     2. [item 2] (Y cases)
-     3. [item 3] (Z cases)
-     [Optional follow-up question]"
+7. **When Information is Sufficient - CONCISE STRUCTURE WITH ACTIONS**:
+   - **If merge_applied = true**: Brief acknowledgment based on merge_reasoning (max 10 words) + answer
+   - **If merge_applied = false**: Direct answer only (no acknowledgment)
+   - Structure:
+     * 1 brief intro sentence (max 15 words) OR brief acknowledgment if merge_applied = true
+     * Numbered list with case counts - clearly label type (errors, defects, operations, styles)
+     * **If multiple items listed**: Ask which one is relevant
+     * **If actions available**: List actions clearly
+     * 1 optional follow-up sentence if needed
+   - Example with merge_applied = true (follow-up selection):
+     "Following up on your previous question, [selected error] is related to the following defects:
+     1. [defect] (X cases)
+     2. [defect] (Y cases)
+     3. [defect] (Z cases)
+     Which defect is occurring?"
+   - Example with merge_applied = true (completing query):
+     "Building on your previous question about [X], with [new info], [topic] can be caused by the following errors:
+     1. [error] (X cases)
+     2. [error] (Y cases)
+     3. [error] (Z cases)
+     Which error is affecting you?"
+   - Example without merge (merge_applied = false):
+     "[Topic] can be caused by the following errors:
+     1. [error] (X cases)
+     2. [error] (Y cases)
+     3. [error] (Z cases)
+     Which error is affecting you?"
+   - Example with actions:
+     "[Topic] can be caused by the following errors:
+     1. [error] (X cases)
+     2. [error] (Y cases)
+     Recommended actions:
+     1. [action] (X cases)
+     2. [action] (Y cases)
+     Which error is affecting you?"
 
-7. **When Information is Lacking**:
-   - State what's available in 1 sentence
-   - List available options in numbered format if applicable
-   - Request missing information in 1 sentence
+8. **When Information is Lacking - ASK FOR CLARIFICATION**:
+   - State what's available in 1 sentence - use proper terminology
+   - List available options in numbered format - clearly label type (errors, defects, operations, styles)
+   - Request missing information in 1 sentence - use proper terminology
+   - Example: "Available errors: 1. [error] (X cases), 2. [error] (Y cases). Please specify which error is affecting you and provide the operation and style for a precise answer."
+   - **When multiple options exist**: Always ask which one is relevant (e.g., "Which error?", "Which defect?", "Which operation?")
 
-Generate a helpful, CLEAR response that addresses the user's query. Use numbered lists for better readability and include case counts when available.
+9. **Providing Actions - CRITICAL FOR USER HELP**:
+   - **ALWAYS include actions when available** from Elasticsearch results
+   - List actions in numbered format: "Recommended actions:" or "Actions you can take:"
+   - Include case counts for actions when available
+   - Be clear and concise about what action to take
+   - Example: "Recommended actions: 1. Check thread tension settings (34 cases), 2. Verify needle type (12 cases)"
+   - Actions should be actionable and specific - users are seeking help to solve problems
+   - If actions are the primary answer, lead with them
+
+Generate a helpful, CLEAR, and CONCISE response that addresses the user's query. Use numbered lists for better readability and include case counts when available.
+
+**CRITICAL TERMINOLOGY AND CLARITY RULES:**
+- **ALWAYS use proper terminology**: "errors", "defects", "operations", "styles", "actions" - NOT "issues", "problems", "things", "items"
+- **When listing items**: Clearly state what type (e.g., "The following errors:", "Available defects:", "These operations:")
+- **When multiple options exist**: Ask which one is relevant (e.g., "Which error is affecting you?", "Which defect is occurring?")
+- **When actions are available**: List them clearly as "Recommended actions:" or "Actions you can take:"
+- **Users seek actionable help**: Prioritize providing actions and clear guidance
+- **Be explicit**: Don't assume the user knows what type of item you're referring to
 
 **CRITICAL FORMATTING RULES:**
-- **ALWAYS check thread_memory_summary first** to see if current query relates to previous conversation
-- **If related**: Acknowledge the connection naturally at the start, then provide answer
-- **If unrelated**: Provide direct answer without forcing connections
+- **STEP 1**: Check merge_applied flag - if true, connection was already determined by analysis phase
+- **STEP 2**: Use merge_reasoning and analysis_reasoning to understand the connection type
+- **If merge_applied = true**: Brief acknowledgment (max 10 words) based on merge_reasoning + answer
+- **If merge_applied = false**: Check merge_reasoning - if indicates no connection, provide direct answer only
+- **Use classification_registry** (not original registry_matches) - this is the merged/context-aware registry set
 - Use numbered lists (1., 2., 3., etc.) for ANY list of items
 - Each numbered item on its own line
 - Include case counts: "1. item name (X cases)"
-- Keep it structured and scannable
-- Balance clarity with conciseness - clear is more important than brief
-- Show conversation continuity when context is relevant
+- Keep it structured, scannable, and CONCISE
+- Remove verbose phrases - get straight to the point
+- Maximum response length guidelines:
+  * Precise/error-precise: 1 intro + list + 1 optional follow-up
+  * Non-precise: 1 intro + list + 1 clarification request
+  * Generic: 2-3 sentences max
 
 Response (write directly, no JSON, no markdown formatting, use numbered lists for clarity):
 

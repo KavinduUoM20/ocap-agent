@@ -437,11 +437,20 @@ def classify(state: OCAPState) -> Dict[str, Any]:
     query = state.get("query", "")
     classification = state.get("classification")
     metadata = state.get("metadata") or {}
-    registry_matches = metadata.get("registry_matches", [])
+    
+    # Use classification_registry if available (from analyze node merge decision), otherwise fall back to registry_matches
+    analysis_metadata = metadata.get("analysis", {})
+    classification_registry = analysis_metadata.get("classification_registry")
+    registry_matches = classification_registry if classification_registry else metadata.get("registry_matches", [])
+    
+    merge_applied = analysis_metadata.get("merge_applied", False)
     
     logger.info(
         f"Classifying query for Elasticsearch search: {query[:50]}... "
-        f"(classification: {classification})"
+        f"(classification: {classification}, "
+        f"using: {'classification_registry' if classification_registry else 'registry_matches'}, "
+        f"merge_applied: {merge_applied}, "
+        f"matches_count: {len(registry_matches)})"
     )
     
     if not classification:
