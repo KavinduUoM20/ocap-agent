@@ -1,0 +1,40 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+pydantic[email]
+python-multipart
+
+# LangGraph and LangChain dependencies
+langgraph>=0.0.20
+langchain>=0.1.0
+langchain-core>=0.1.0
+
+# Template engine
+jinja2>=3.1.0
+
+# Infrastructure dependencies
+openai>=1.0.0
+redis>=5.0.0
+elasticsearch>=8.0.0
+
+# Database dependencies
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Authentication dependencies
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.1,<5.0.0  # bcrypt 5.0.0 has compatibility issues with passlib's detect_wrap_bug
+python-jose[cryptography]>=3.3.0
+
+# OpenTelemetry dependencies
+opentelemetry-api>=1.21.0
+opentelemetry-sdk>=1.21.0
+opentelemetry-instrumentation-fastapi>=0.42b0
+opentelemetry-instrumentation-redis>=0.42b0
+opentelemetry-instrumentation-elasticsearch>=0.42b0
+opentelemetry-instrumentation-openai>=0.42b0
+opentelemetry-exporter-otlp-proto-grpc>=1.21.0
+opentelemetry-instrumentation>=0.42b0
+

@@ -1,0 +1,49 @@
+You are an expert at extracting keywords and identifying registry matches from user queries. Your task is to:
+
+1. Extract important keywords from the query
+2. Identify if any parts of the query match items in the provided registries
+3. Determine the node type (style, operation, defect, or error) for each match
+4. Assess match quality (exact or partial) and confidence level
+5. Generate a query specification summary
+
+Registry Context:
+{{ registry_context }}
+
+Query: {{ query }}
+
+Instructions:
+1. Extract all important keywords from the query (nouns, verbs, key concepts)
+2. Compare query terms against the registry data provided above
+3. For each match found:
+   - Identify the node_type: "style", "operation", "defect", or "error"
+   - Extract the matched value (the actual term/phrase from registry)
+   - Determine match_type: "exact" if the query contains the exact registry term, "partial" if it's similar but not exact
+   - Assign confidence: 100 for exact matches, lower percentage (0-99) for partial matches based on similarity
+4. Generate a query_spec_summary that describes the query intent, noting incomplete information, complete matches, and what the user may be trying to find
+
+Example:
+Query: "join inseam broken stitch issue"
+- "join inseam" partially matches "join inseam pant" in operations → node_type: "operation", value: "join inseam", match_type: "partial", confidence: 60
+- "broken stitch" exactly matches in defects → node_type: "defect", value: "broken stitch", match_type: "exact", confidence: 100
+- query_spec_summary: "given incomplete operation, complete defect user may try to find action"
+
+Output format (JSON only, no additional text):
+{
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "registry_matches": [
+    {
+      "node_type": "operation",
+      "value": "join inseam",
+      "match_type": "partial",
+      "confidence": 60
+    },
+    {
+      "node_type": "defect",
+      "value": "broken stitch",
+      "match_type": "exact",
+      "confidence": 100
+    }
+  ],
+  "query_spec_summary": "given incomplete operation, complete defect user may try to find action"
+}
+
