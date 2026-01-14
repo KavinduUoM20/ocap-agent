@@ -103,6 +103,16 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
         # Retrieve workflow states from Redis with explicit tracing
         workflow_interactions: List[Dict[str, Any]] = []
         historical_registry_matches: List[Dict[str, Any]] = []
+        previous_query_results: List[Dict[str, Any]] = []  # Store previous Elasticsearch query results
+        
+        # Track consolidated slot state across all previous turns
+        # This tracks what slots (defect, operation, style, error) have been filled
+        consolidated_slot_state: Dict[str, List[str]] = {
+            "defect": [],
+            "operation": [],
+            "style": [],
+            "error": []
+        }
         
         for workflow_run_id in workflow_run_ids:
             workflow_key = f"workflow:{workflow_run_id}"
@@ -130,16 +140,45 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
                     workflow_data = json.loads(workflow_data_str)
                     
                     # Extract relevant information for LLM summarization
-                    # Only include query, response, and classification (no Elasticsearch results)
+                    # Include query, response, classification, AND Elasticsearch query results
                     interaction = {
                         "query": workflow_data.get("query", ""),
                         "response": workflow_data.get("response", ""),
                         "classification": workflow_data.get("classification")
                     }
                     
+                    # Extract Elasticsearch query results from classify_results
+                    classify_results = workflow_data.get("classify_results", {})
+                    if classify_results:
+                        interaction["query_method"] = classify_results.get("query_method")
+                        interaction["results_count"] = classify_results.get("results_count", 0)
+                        interaction["formatted_text"] = classify_results.get("formatted_text", "")
+                        # Store actual results for context (limit to avoid huge payloads)
+                        results = classify_results.get("results", [])
+                        if results:
+                            # Store a summary of results (first few rows) for context
+                            interaction["results_summary"] = results[:5]  # First 5 results for context
+                            interaction["total_results"] = len(results)
+                    
                     # Extract registry_matches from metadata for historical tracking
                     workflow_metadata = workflow_data.get("metadata", {})
                     registry_matches = workflow_metadata.get("registry_matches", [])
+                    
+                    # Also check classification_registry from analysis metadata (merged registry)
+                    analysis_metadata = workflow_metadata.get("analysis", {})
+                    classification_registry = analysis_metadata.get("classification_registry")
+                    # Use classification_registry if available (merged), otherwise use registry_matches
+                    effective_registry = classification_registry if classification_registry else registry_matches
+                    
+                    # Extract slot values from registry matches and add to consolidated slot state
+                    if effective_registry and isinstance(effective_registry, list):
+                        for match in effective_registry:
+                            node_type = match.get("node_type", "")
+                            value = match.get("value", "")
+                            if node_type in consolidated_slot_state and value:
+                                # Avoid duplicates
+                                if value not in consolidated_slot_state[node_type]:
+                                    consolidated_slot_state[node_type].append(value)
                     
                     # Build historical registry matches entry (most recent first)
                     if registry_matches and isinstance(registry_matches, list):
@@ -149,11 +188,37 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
                             "response": workflow_data.get("response", ""),
                             "classification": workflow_data.get("classification"),
                             "registry_matches": registry_matches,
-                            "created_at": workflow_data.get("created_at", "")
+                            "created_at": workflow_data.get("created_at", ""),
+                            # Include query results for context
+                            "query_method": classify_results.get("query_method") if classify_results else None,
+                            "results_count": classify_results.get("results_count", 0) if classify_results else 0,
+                            "formatted_text": classify_results.get("formatted_text", "") if classify_results else ""
                         }
                         historical_registry_matches.append(historical_entry)
                         logger.debug(
-                            f"Extracted {len(registry_matches)} registry matches from workflow {workflow_run_id}"
+                            f"Extracted {len(registry_matches)} registry matches from workflow {workflow_run_id}, "
+                            f"query_method={historical_entry.get('query_method')}, "
+                            f"results_count={historical_entry.get('results_count')}"
+                        )
+                    
+                    # Store previous query results for summarize node context
+                    # This helps understand what was queried and returned in previous turns
+                    if classify_results:
+                        previous_result_entry = {
+                            "workflow_run_id": workflow_run_id,
+                            "query": workflow_data.get("query", ""),
+                            "query_method": classify_results.get("query_method"),
+                            "results_count": classify_results.get("results_count", 0),
+                            "formatted_text": classify_results.get("formatted_text", ""),
+                            "results": classify_results.get("results", [])[:10],  # First 10 results for context
+                            "classification": workflow_data.get("classification"),
+                            "registry_matches": registry_matches
+                        }
+                        previous_query_results.append(previous_result_entry)
+                        logger.debug(
+                            f"Stored previous query results from workflow {workflow_run_id}: "
+                            f"method={previous_result_entry.get('query_method')}, "
+                            f"results={previous_result_entry.get('results_count')}"
                         )
                     
                     # Only add interaction if we have at least a query
@@ -173,6 +238,13 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
             metadata["thread_memory_available"] = False
             metadata["workflow_count"] = 0
             metadata["historical_registry_matches"] = []
+            metadata["consolidated_slot_state"] = {
+                "defect": [],
+                "operation": [],
+                "style": [],
+                "error": []
+            }
+            metadata["previous_query_results"] = []
             return {"metadata": metadata}
         
         logger.info(f"Retrieved {len(workflow_interactions)} workflow interactions for summarization")
@@ -240,6 +312,29 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
                 metadata["historical_registry_matches"] = []
                 logger.debug("No historical registry matches found in previous workflows")
             
+            # Store consolidated slot state - tracks what slots have been filled across conversation
+            # This helps the summarize node know what information was already provided
+            metadata["consolidated_slot_state"] = consolidated_slot_state
+            filled_slots_summary = {
+                slot_type: len(values) 
+                for slot_type, values in consolidated_slot_state.items() 
+                if values
+            }
+            logger.info(
+                f"Stored consolidated slot state: {filled_slots_summary} "
+                f"(defect: {len(consolidated_slot_state['defect'])}, "
+                f"operation: {len(consolidated_slot_state['operation'])}, "
+                f"style: {len(consolidated_slot_state['style'])}, "
+                f"error: {len(consolidated_slot_state['error'])})"
+            )
+            
+            # Store previous query results for summarize node
+            # This provides context about what was queried and returned in previous turns
+            metadata["previous_query_results"] = previous_query_results
+            logger.info(
+                f"Stored {len(previous_query_results)} previous query result entries for context"
+            )
+            
             return {
                 "metadata": metadata
             }
@@ -275,6 +370,23 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
             else:
                 metadata["historical_registry_matches"] = []
             
+            # Store consolidated slot state even in fallback case
+            metadata["consolidated_slot_state"] = consolidated_slot_state
+            filled_slots_summary = {
+                slot_type: len(values) 
+                for slot_type, values in consolidated_slot_state.items() 
+                if values
+            }
+            logger.info(
+                f"Stored consolidated slot state (fallback): {filled_slots_summary}"
+            )
+            
+            # Store previous query results even in fallback case
+            metadata["previous_query_results"] = previous_query_results
+            logger.info(
+                f"Stored {len(previous_query_results)} previous query result entries (fallback)"
+            )
+            
             return {
                 "metadata": metadata
             }
@@ -286,6 +398,13 @@ def summarize_thread_memory(state: OCAPState) -> Dict[str, Any]:
         metadata["thread_memory_available"] = False
         metadata["thread_memory_error"] = str(e)
         metadata["historical_registry_matches"] = []
+        metadata["consolidated_slot_state"] = {
+            "defect": [],
+            "operation": [],
+            "style": [],
+            "error": []
+        }
+        metadata["previous_query_results"] = []
         return {
             "metadata": metadata
         }

@@ -41,6 +41,21 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
     thread_memory_summary = metadata.get("thread_memory_summary")
     classify_results = metadata.get("classify", {})
     classify_formatted_text = classify_results.get("formatted_text", "")
+    query_method = classify_results.get("query_method", "")
+    results_count = classify_results.get("results_count", 0)
+    response_strategy = classify_results.get("response_strategy", {})  # Result-based response strategy
+    
+    # Get previous query results from memory node
+    # This provides context about what was queried and returned in previous turns
+    previous_query_results = metadata.get("previous_query_results", [])
+    
+    # Get consolidated slot state - tracks what slots were already filled in previous turns
+    consolidated_slot_state = metadata.get("consolidated_slot_state", {
+        "defect": [],
+        "operation": [],
+        "style": [],
+        "error": []
+    })
     
     # Get classification_registry from analysis metadata (merged registry if merge was applied)
     analysis_metadata = metadata.get("analysis", {})
@@ -53,12 +68,38 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
     if not classification_registry:
         classification_registry = metadata.get("registry_matches", [])
     
+    # Extract current turn's slot values from classification_registry
+    current_slot_state = {
+        "defect": [],
+        "operation": [],
+        "style": [],
+        "error": []
+    }
+    if classification_registry:
+        for match in classification_registry:
+            node_type = match.get("node_type", "")
+            value = match.get("value", "")
+            if node_type in current_slot_state and value:
+                if value not in current_slot_state[node_type]:
+                    current_slot_state[node_type].append(value)
+    
+    # Combine historical and current slot state to get complete picture
+    # This shows what slots are filled across the entire conversation
+    filled_slots = {
+        "defect": list(set(consolidated_slot_state.get("defect", []) + current_slot_state.get("defect", []))),
+        "operation": list(set(consolidated_slot_state.get("operation", []) + current_slot_state.get("operation", []))),
+        "style": list(set(consolidated_slot_state.get("style", []) + current_slot_state.get("style", []))),
+        "error": list(set(consolidated_slot_state.get("error", []) + current_slot_state.get("error", [])))
+    }
+    
     logger.info(
         f"Generating summary response for query: {query[:50]}... "
         f"(classification: {classification}, "
         f"thread_memory: {'Available' if thread_memory_summary else 'None'}, "
         f"merge_applied: {merge_applied}, "
-        f"classification_registry_count: {len(classification_registry) if classification_registry else 0})"
+        f"classification_registry_count: {len(classification_registry) if classification_registry else 0}, "
+        f"filled_slots: defect={len(filled_slots['defect'])}, operation={len(filled_slots['operation'])}, "
+        f"style={len(filled_slots['style'])}, error={len(filled_slots['error'])})"
     )
     
     if not classification:
@@ -77,14 +118,21 @@ def summarize(state: OCAPState) -> Dict[str, Any]:
         # Render template
         prompt = template.render(
             query=query,
-            classification=classification,
+            classification=classification,  # This is query strategy classification
             query_spec_summary=query_spec_summary,
             classification_registry=classification_registry,
             merge_applied=merge_applied,
             merge_reasoning=merge_reasoning,
             analysis_reasoning=analysis_reasoning,
             thread_memory_summary=thread_memory_summary,
-            classify_formatted_text=classify_formatted_text
+            classify_formatted_text=classify_formatted_text,
+            query_method=query_method,
+            results_count=results_count,
+            response_strategy=response_strategy,  # This is result-based response strategy
+            filled_slots=filled_slots,
+            consolidated_slot_state=consolidated_slot_state,
+            current_slot_state=current_slot_state,
+            previous_query_results=previous_query_results
         )
         
         # Get Azure OpenAI client
