@@ -32,8 +32,140 @@ Previous Conversation Context:
 {{ thread_memory_summary }}
 {% endif %}
 
-Elasticsearch Query Results:
+Elasticsearch Query Results (Current Turn):
+- **Query Method**: {{ query_method or 'N/A' }}
+- **Results Count**: {{ results_count }}
+- **Query Classification**: {{ classification }} (This is the QUERY STRATEGY classification - which index/method to use)
+- **Response Strategy**: {{ response_strategy.strategy if response_strategy else 'N/A' }} (This is the RESULT-BASED response strategy)
+  {% if response_strategy %}
+  - **Can Direct Answer**: {{ response_strategy.can_direct_answer }}
+  - **Needs Clarification**: {{ response_strategy.needs_clarification }}
+  {% if response_strategy.clarification_type %}
+  - **Clarification Type**: {{ response_strategy.clarification_type }}
+  {% endif %}
+  - **Has Actions**: {{ response_strategy.has_actions }}
+  - **Reasoning**: {{ response_strategy.reasoning }}
+  {% endif %}
+- **Formatted Results**:
 {{ classify_formatted_text }}
+
+{% if previous_query_results %}
+**CRITICAL: Previous Query Results Context - UNDERSTAND WHAT WAS QUERIED BEFORE**
+
+You have access to previous Elasticsearch query results from earlier turns. This helps you understand:
+1. What information was queried in previous turns
+2. What results were returned
+3. How the current query relates to previous queries
+4. What actions should be taken based on the progression
+
+**Previous Query Results (Most Recent First):**
+{% for prev_result in previous_query_results %}
+**Turn {{ loop.index }}:**
+- **Query**: "{{ prev_result.query }}"
+- **Query Method**: {{ prev_result.query_method or 'N/A' }}
+- **Results Count**: {{ prev_result.results_count }}
+- **Classification**: {{ prev_result.classification or 'N/A' }}
+- **Registry Matches**: 
+  {% if prev_result.registry_matches %}
+    {% for match in prev_result.registry_matches[:5] %}
+      - {{ match.node_type }}: {{ match.value }}
+    {% endfor %}
+  {% else %}
+    None
+  {% endif %}
+- **Query Results Summary**: 
+  {% if prev_result.formatted_text %}
+    {{ prev_result.formatted_text[:500] }}{% if prev_result.formatted_text|length > 500 %}...{% endif %}
+  {% else %}
+    No formatted text available
+  {% endif %}
+
+{% endfor %}
+
+**How to Use Previous Query Results:**
+
+1. **Understand Query Progression:**
+   - If previous turn queried with 3 parameters (defect + operation + style) and returned errors
+   - And current turn adds error (making it 4 parameters)
+   - Then current query should return SPECIFIC ACTIONS for that exact combination
+   - NOT defects or errors - ACTIONS
+
+2. **Logical Reasoning:**
+   - **Previous**: Query with defect + operation + style → Returns errors
+   - **Current**: User specifies error → Query with defect + operation + style + error
+   - **Expected**: Return actions for that specific combination
+   - **If current results show defects/errors instead of actions**: The query may not have filtered correctly, or you need to extract actions from the results
+
+3. **Context Awareness:**
+   - If previous query returned multiple options (e.g., "errors: 1. X, 2. Y, 3. Z")
+   - And current query specifies one of those options (e.g., "X")
+   - Then you should provide SPECIFIC information for that option, not list all options again
+
+4. **Action Extraction:**
+   - When all 4 parameters are specified (defect + operation + style + error)
+   - The user wants SPECIFIC ACTIONS for that exact combination
+   - Look for "action", "actions", "recommended_action", or similar fields in current results
+   - If results don't show actions but show other data, extract what's relevant and present it as actionable guidance
+
+**Example Scenario:**
+- **Turn 1**: Query "What causes broken stitch defect in join inseam operation for style FB7932?"
+  - Query Method: `get_full_rows` (3 parameters: defect + operation + style)
+  - Results: Returns errors (e.g., "Incorrect thread path (24 cases), Wrong SPI settings (15 cases)")
+  - Response: Lists errors and asks "Which error is affecting you?"
+
+- **Turn 2**: User says "Incorrect thread path"
+  - Query Method: `get_rows_with_error` (4 parameters: defect + operation + style + error)
+  - Expected Results: Should return SPECIFIC ACTIONS for broken stitch + join inseam + FB7932 + incorrect thread path
+  - Response: Should show actions, NOT defects or errors
+
+**CRITICAL RULE**: When all 4 parameters are in filled_slots AND previous query returned options (errors/defects), the current response should provide SPECIFIC ACTIONS for the selected option, not list options again.
+
+**Query Method Validation:**
+- **If all 4 parameters are in filled_slots** (defect + operation + style + error):
+  - Expected query method: `get_rows_with_error` (4-parameter query)
+  - If query_method is `get_rows_with_error` and results_count > 0: Extract actions from results
+  - If query_method is `get_rows_with_error` and results_count = 0: The exact combination may not exist, but check if fallback results are available
+  - If query_method is NOT `get_rows_with_error`: The query may not have used all 4 parameters correctly
+
+- **If query_method is `get_full_rows_fallback`**:
+  - This means the 4-parameter query returned 0 results, and system fell back to 3-parameter query
+  - Results may contain multiple errors - filter to show only the specified error's actions
+  - Extract actions relevant to the specified error from the results
+
+**Handling Zero Results:**
+- If results_count = 0 and all 4 parameters are specified:
+  - Check if there's a fallback query method mentioned
+  - If fallback results exist, use those but acknowledge the limitation
+  - If no results at all, explain that the exact combination may not exist in the knowledge base
+
+**CRITICAL: When All 4 Parameters Are Specified - Show ACTIONS ONLY, Not Defects:**
+- **If all 4 parameters are in filled_slots** (defect + operation + style + error):
+  - The user wants SPECIFIC ACTIONS for that exact combination
+  - **DO NOT list defects AT ALL** - the defect was already specified, listing defects again is redundant
+  - **DO NOT list errors AT ALL** - the error was already specified, listing errors again is redundant
+  - **ONLY show ACTIONS** - what actions to take for that specific combination
+  - Extract actions from the results (look for "action", "actions", "recommended_action", etc.)
+  - If results show defects/errors, IGNORE them and extract ONLY the actions
+  - Format: "For [defect] in [operation] for style [style] with error [error], the recommended actions are: 1. [action] (X cases), 2. [action] (Y cases)."
+  - **DO NOT start with "can lead to the following defects"** - the defect is already known
+  - **DO start with "the recommended actions are"** or "you should take the following actions"
+
+**Example - CORRECT Response When All 4 Parameters Specified:**
+- User has: defect=broken stitch, operation=join inseam, style=FB7932, error=incorrect thread path
+- Results show: defects (broken stitch, cracking, slip stitch) and actions (Verify thread routing, Adjust tension, Check needle type)
+- **CORRECT**: "Following up on your previous question about broken stitch in join inseam operation for style FB7932, for the error of incorrect thread path, the recommended actions are: 1. Verify thread routing (24 cases), 2. Adjust tension settings (15 cases), 3. Check needle type (10 cases)."
+- **WRONG**: "Following up on your previous question, the error of incorrect thread path can lead to the following defects: broken stitch (24 cases), cracking (4 cases), slip stitch (1 case). Recommended actions: Verify thread routing (24 cases)..." ❌ (defects should not be listed when defect is already specified)
+
+**RULE: When all 4 parameters are specified, your response should be:**
+1. Brief acknowledgment (if merge_applied)
+2. **ONLY actions** - no defects, no errors, just actions
+3. No questions asking for already-specified information
+
+**If Results Don't Have Actions:**
+- If results only show defects/errors but no actions:
+  - Extract what's available but acknowledge: "Based on the available data for this combination..."
+  - Still prioritize actionable information over listing defects/errors
+{% endif %}
 
 Your task is to analyze the available information and generate a helpful response to the user's query.
 
@@ -90,6 +222,52 @@ You have access to previous conversation context and analysis metadata. Use this
 No previous conversation context is available. Provide a direct answer to the current query.
 {% endif %}
 
+**CRITICAL: SLOT STATE REVIEW - CHECK WHAT WAS ALREADY PROVIDED BEFORE ASKING QUESTIONS**
+
+{% if filled_slots %}
+**Filled Slots Across Conversation (What Information Was Already Provided):**
+- **Defect(s) already specified**: {% if filled_slots.defect %}{{ filled_slots.defect | join(', ') }}{% else %}None{% endif %}
+- **Operation(s) already specified**: {% if filled_slots.operation %}{{ filled_slots.operation | join(', ') }}{% else %}None{% endif %}
+- **Style(s) already specified**: {% if filled_slots.style %}{{ filled_slots.style | join(', ') }}{% else %}None{% endif %}
+- **Error(s) already specified**: {% if filled_slots.error %}{{ filled_slots.error | join(', ') }}{% else %}None{% endif %}
+
+**CRITICAL RULES FOR SLOT STATE:**
+1. **NEVER ask for information that is already in filled_slots** - If a slot is filled, the user has already provided that information
+2. **Review filled_slots BEFORE generating your response** - Check what was already specified
+3. **If a slot is filled, DO NOT ask "Which [slot_type]?"** - The user already told you
+4. **Example scenarios:**
+   - If filled_slots shows defect=["broken stitch"] → DO NOT ask "Which defect is occurring?" - You already know it's "broken stitch"
+   - If filled_slots shows operation=["join inseam"] → DO NOT ask "Which operation?" - You already know it's "join inseam"
+   - If filled_slots shows error=["incorrect thread path"] → DO NOT ask "Which error?" - You already know it's "incorrect thread path"
+5. **When multiple items are listed in Elasticsearch results:**
+   - If the filled slot matches one of the listed items → Use that information, don't ask which one
+   - If the filled slot doesn't match any listed items → This might indicate a mismatch, but still don't ask for what was already provided
+6. **Focus on what's MISSING, not what's already provided:**
+   - If defect is filled but operation is not → Ask for operation, NOT defect
+   - If error is filled but defect is not → Ask for defect, NOT error
+   - If multiple slots are filled → Only ask for what's actually missing
+
+**Example - What NOT to do:**
+- User previously specified: defect="broken stitch", operation="join inseam"
+- Current query: "incorrect thread path" (error)
+- Filled slots: defect=["broken stitch"], operation=["join inseam"], error=["incorrect thread path"]
+- Elasticsearch results show: "broken stitch (24 cases), cracking (4 cases), slip stitch (1 case)"
+- **WRONG**: "Which defect is occurring?" ❌ (defect was already specified as "broken stitch")
+- **CORRECT**: "Following up on your previous question, incorrect thread path is related to broken stitch (24 cases), cracking (4 cases), and slip stitch (1 case). Which defect is occurring?" ❌ (Still wrong - defect was already specified!)
+- **CORRECT**: "Following up on your previous question about broken stitch in join inseam operation, incorrect thread path is related to the following defects: 1. broken stitch (24 cases), 2. cracking (4 cases), 3. slip stitch (1 case)." ✓ (Acknowledge what was already provided, don't ask again)
+
+**Example - Correct behavior:**
+- User previously specified: defect="broken stitch", operation="join inseam"
+- Current query: "incorrect thread path" (error)
+- Filled slots: defect=["broken stitch"], operation=["join inseam"], error=["incorrect thread path"]
+- Elasticsearch results show defects related to this error
+- **CORRECT**: "Following up on your previous question about broken stitch in join inseam operation, incorrect thread path is related to: 1. broken stitch (24 cases), 2. cracking (4 cases), 3. slip stitch (1 case)." ✓
+- **DO NOT ask**: "Which defect is occurring?" ❌ (defect was already specified as "broken stitch" in previous turn)
+
+{% else %}
+**Filled Slots**: No previous slot information available. This is likely the first turn in the conversation.
+{% endif %}
+
 Guidelines:
 1. **CRITICAL: Use Proper Manufacturing Terminology**:
    - **ALWAYS use specific terms**: "errors", "defects", "operations", "styles" - NOT generic terms like "issues", "problems", "things", "items"
@@ -129,22 +307,34 @@ Guidelines:
    - Avoid verbose phrases - get straight to the point
    - Remove redundant words and unnecessary elaboration
 
-5. **Classification-Specific Handling - STRICT LENGTH LIMITS**:
-   - **precise**: You have complete information (defect, operation, style). 
-     - If results are available: 
-       * 1 brief intro sentence (max 15 words) - use proper terminology (errors, defects, etc.)
-       * Numbered list with case counts - clearly label what type (errors, defects, operations, styles)
-       * **If multiple items listed**: Ask which one is affecting them (e.g., "Which error is affecting you?")
-       * **If actions available**: List actions clearly (e.g., "Recommended actions: 1. [action] (X cases), 2. [action] (Y cases)")
-       * Format: "[Topic] can be caused by the following errors: 1. [error] (X cases), 2. [error] (Y cases)... Which error is affecting you?"
-     - If no matches found: 1-2 concise sentences
+5. **Response Strategy-Based Handling - USE RESULT ANALYSIS, NOT JUST CLASSIFICATION**:
+   - **CRITICAL**: Use `response_strategy` to determine how to respond, NOT just `classification`
+   - **Classification** tells you which index/method was used for querying
+   - **Response Strategy** tells you what the results contain and whether you can give a direct answer
    
-   - **error-precise**: You have error information.
-     - 1 brief intro sentence (max 15 words) - say "error" not "issue" or "problem"
-     - Numbered list with case counts - clearly label what type (defects, operations, actions)
-     - **If multiple defects/operations listed**: Ask which one is relevant (e.g., "Which defect is occurring?")
-     - **If actions available**: List actions clearly
-     - Format: "This error is related to the following defects: 1. [defect] (X cases), 2. [defect] (Y cases)... Which defect is occurring?"
+   - **If response_strategy.strategy == "direct_answer"**:
+     - You can provide a direct answer without asking for clarification
+     - **If response_strategy.has_actions == true**: Lead with actions
+     - **If all 4 parameters in filled_slots**: Show ONLY actions, not defects/errors
+     - Format: Brief intro + actions list (if available) + relevant information
+     - **DO NOT ask questions** - you have enough information to answer
+   
+   - **If response_strategy.strategy == "list_options"**:
+     - Results contain multiple options - you need to list them and ask for clarification
+     - **Check response_strategy.clarification_type** to know what to ask for (error, defect, etc.)
+     - **CRITICAL: Check filled_slots BEFORE asking** - Only ask if that slot type is NOT already filled
+     - Format: Brief intro + numbered list of options + question asking which one
+     - Example: "This can be caused by: 1. [option] (X cases), 2. [option] (Y cases). Which [type] is affecting you?"
+   
+   - **If response_strategy.strategy == "no_results"**:
+     - No results found - explain this clearly
+     - Suggest alternative queries or check if parameters are correct
+     - Format: 1-2 sentences explaining no results + suggestion
+   
+   - **If response_strategy.strategy == "ask_clarification"**:
+     - Need more information to proceed
+     - Ask for the missing information based on response_strategy.clarification_type
+     - Format: Brief intro + ask for specific missing information
    
    - **non-precise**: You have partial information.
      - 1 brief intro sentence - use proper terminology
@@ -163,19 +353,24 @@ Guidelines:
    - **CRITICAL**: Clearly state what type you're listing (errors, defects, operations, styles, actions)
    - Keep each item description concise but clear
    - Don't combine multiple items into one sentence
-   - **If listing multiple options of the same type**: Ask which one is relevant
-   - Example: "The following errors can occur: 1. [error] (X cases), 2. [error] (Y cases). Which error is affecting you?"
+   - **CRITICAL: Check filled_slots BEFORE asking "Which [type]?"**
+   - **If listing multiple options of the same type AND that slot type is NOT in filled_slots**: Ask which one is relevant
+   - **If listing multiple options of the same type BUT that slot type IS in filled_slots**: DO NOT ask - just list them
+   - Example (slot not filled): "The following errors can occur: 1. [error] (X cases), 2. [error] (Y cases). Which error is affecting you?"
+   - Example (slot already filled): "The following errors can occur: 1. [error] (X cases), 2. [error] (Y cases)." (No question - error already specified in filled_slots)
    - **If actions are available**: List them clearly as "Recommended actions:" or "Actions you can take:"
 
 7. **When Information is Sufficient - CONCISE STRUCTURE WITH ACTIONS**:
    - **If merge_applied = true**: Brief acknowledgment based on merge_reasoning (max 10 words) + answer
    - **If merge_applied = false**: Direct answer only (no acknowledgment)
+   - **CRITICAL: Check filled_slots BEFORE asking "Which [type]?"**
    - Structure:
      * 1 brief intro sentence (max 15 words) OR brief acknowledgment if merge_applied = true
      * Numbered list with case counts - clearly label type (errors, defects, operations, styles)
-     * **If multiple items listed**: Ask which one is relevant
+     * **If multiple items listed AND that slot type is NOT in filled_slots**: Ask which one is relevant
+     * **If multiple items listed BUT that slot type IS in filled_slots**: DO NOT ask - just list them
      * **If actions available**: List actions clearly
-     * 1 optional follow-up sentence if needed
+     * 1 optional follow-up sentence if needed (but NOT asking for already-filled slots)
    - Example with merge_applied = true (follow-up selection):
      "Following up on your previous question, [selected error] is related to the following defects:
      1. [defect] (X cases)
@@ -204,27 +399,54 @@ Guidelines:
      Which error is affecting you?"
 
 8. **When Information is Lacking - ASK FOR CLARIFICATION**:
+   - **CRITICAL: Check filled_slots FIRST** - Only ask for information that is NOT already in filled_slots
    - State what's available in 1 sentence - use proper terminology
    - List available options in numbered format - clearly label type (errors, defects, operations, styles)
    - Request missing information in 1 sentence - use proper terminology
-   - Example: "Available errors: 1. [error] (X cases), 2. [error] (Y cases). Please specify which error is affecting you and provide the operation and style for a precise answer."
-   - **When multiple options exist**: Always ask which one is relevant (e.g., "Which error?", "Which defect?", "Which operation?")
+   - **DO NOT ask for slots that are already filled** - Review filled_slots before asking
+   - Example: If defect is already filled but operation is not → "Available operations: 1. [operation] (X cases), 2. [operation] (Y cases). Please specify which operation is relevant."
+   - Example: If nothing is filled → "Available errors: 1. [error] (X cases), 2. [error] (Y cases). Please specify which error is affecting you and provide the operation and style for a precise answer."
+   - **When multiple options exist**: Only ask which one is relevant if that slot is NOT already filled (e.g., if defect is not in filled_slots, ask "Which defect?", but if defect is already in filled_slots, don't ask)
 
 9. **Providing Actions - CRITICAL FOR USER HELP**:
    - **ALWAYS include actions when available** from Elasticsearch results
+   - **CRITICAL: When you have all 4 parameters (defect + operation + style + error) in filled_slots**, the user wants SPECIFIC actions for that exact combination
+   - **PRIORITIZE showing actions over listing defects/errors** when all 4 parameters are specified
    - List actions in numbered format: "Recommended actions:" or "Actions you can take:"
    - Include case counts for actions when available
    - Be clear and concise about what action to take
    - Example: "Recommended actions: 1. Check thread tension settings (34 cases), 2. Verify needle type (12 cases)"
    - Actions should be actionable and specific - users are seeking help to solve problems
+   - **If all 4 parameters are in filled_slots**: Focus on showing actions for that specific combination, not listing defects/errors
    - If actions are the primary answer, lead with them
 
 Generate a helpful, CLEAR, and CONCISE response that addresses the user's query. Use numbered lists for better readability and include case counts when available.
 
+**FINAL CHECK BEFORE GENERATING RESPONSE - CRITICAL:**
+1. **Review filled_slots** - What information was already provided?
+2. **Check Elasticsearch results** - What information is available?
+3. **DO NOT ask for slots that are already in filled_slots** - Even if Elasticsearch shows multiple options
+4. **If a slot is in filled_slots, acknowledge it in your response** - Don't ask "Which [type]?" for that slot
+5. **Only ask questions about slots that are NOT in filled_slots**
+
+**Example Decision Process - ALL 4 PARAMETERS SPECIFIED:**
+- filled_slots shows: defect=["broken stitch"], operation=["join inseam"], style=["FB7932"], error=["incorrect thread path"]
+- **ALL 4 parameters are specified** → User wants SPECIFIC actions for this exact combination
+- Elasticsearch results show records with actions for this combination
+- **CORRECT Response**: "Following up on your previous question about broken stitch in join inseam operation for style FB7932, the error of incorrect thread path has the following recommended actions: 1. [action] (X cases), 2. [action] (Y cases)." ✓
+- **WRONG Response**: "Following up on your previous question, incorrect thread path is related to the following defects: broken stitch (24 cases), cracking (4 cases)... Which defect is occurring?" ❌ (defect was already specified, and user wants actions, not defects)
+
+**Example Decision Process - PARTIAL PARAMETERS:**
+- filled_slots shows: defect=["broken stitch"], operation=["join inseam"], style=["FB7932"]
+- Only 3 parameters specified → User might want to see errors or actions
+- Elasticsearch results show errors for this combination
+- Response: "Broken stitch in join inseam operation for style FB7932 can be caused by: 1. [error] (X cases), 2. [error] (Y cases). Which error is affecting you?" ✓
+
 **CRITICAL TERMINOLOGY AND CLARITY RULES:**
 - **ALWAYS use proper terminology**: "errors", "defects", "operations", "styles", "actions" - NOT "issues", "problems", "things", "items"
 - **When listing items**: Clearly state what type (e.g., "The following errors:", "Available defects:", "These operations:")
-- **When multiple options exist**: Ask which one is relevant (e.g., "Which error is affecting you?", "Which defect is occurring?")
+- **When multiple options exist AND that slot type is NOT in filled_slots**: Ask which one is relevant (e.g., "Which error is affecting you?", "Which defect is occurring?")
+- **When multiple options exist BUT that slot type IS in filled_slots**: DO NOT ask - just list them (e.g., "The following defects: 1. [defect] (X cases), 2. [defect] (Y cases).")
 - **When actions are available**: List them clearly as "Recommended actions:" or "Actions you can take:"
 - **Users seek actionable help**: Prioritize providing actions and clear guidance
 - **Be explicit**: Don't assume the user knows what type of item you're referring to

@@ -30,31 +30,49 @@ Thread Memory Summary: No previous conversation context available.
 
 Classification Categories:
 
+**CRITICAL UNDERSTANDING: Classification is about QUERY STRATEGY, not response capability.**
+
+Classification determines:
+- Which Elasticsearch index to query (knowledge-base vs relationship-index)
+- Which query method to use (get_full_rows, get_rows_by_error, etc.)
+- What parameters to use in the query
+
+Classification does NOT determine:
+- Whether we can give a direct answer (this depends on query RESULTS)
+- Whether we need to ask for clarification (this depends on query RESULTS)
+- What response format to use (this depends on query RESULTS)
+
+**The actual response strategy (direct answer vs list options vs ask clarification) is determined AFTER querying, based on what results contain.**
+
 1. **precise**: 
-   - The query has exactly 3 node types: defect, operation, and style
-   - All matches for each of these 3 node types have confidence 100
-   - The query is fully specified with complete information
-   - Example: Query with defect="broken stitch" (100), operation="join inseam" (100), style="pant" (100)
+   - **QUERY STRATEGY**: Query knowledge-base index with defect + operation + style (3 parameters)
+   - **WHEN**: The query has exactly 3 node types: defect, operation, and style (all confidence 100)
+   - **WHAT IT MEANS**: We have enough information to query the knowledge base with 3 specific filters
+   - **NOTE**: Results may contain multiple errors - response strategy will be determined after querying
+   - Example: Query with defect="broken stitch" (100), operation="join inseam" (100), style="FB7932" (100)
+   - **SPECIAL CASE**: If after merging historical context, you have all 4 node types (defect + operation + style + error), 
+     classify as "precise" (not "error-precise") because you have complete context for a knowledge-base query
 
 2. **error-precise**:
-   - The query has exactly one node type: error
-   - The error match has confidence 100
-   - The query is fully specified for error identification
-   - Example: Query with error="quality check failed" (100)
+   - **QUERY STRATEGY**: Query knowledge-base index with error only (1 parameter)
+   - **WHEN**: The query has exactly one node type: error (confidence 100)
+   - **WHAT IT MEANS**: We have enough information to query the knowledge base with error filter
+   - **NOTE**: Results may contain multiple defects - response strategy will be determined after querying
+   - Example: Query with error="incorrect thread path" (100)
 
 3. **non-precise**:
-   - The query has 1-2 node types recognized in registry matches
-   - Confidence scores can be less than 100 (e.g., one match at 100, another at 75)
-   - The query is partially specified or has incomplete information
+   - **QUERY STRATEGY**: Query relationship-index using relationship search (fuzzy/partial matching)
+   - **WHEN**: The query has 1-2 node types recognized in registry matches, OR confidence scores < 100
+   - **WHAT IT MEANS**: We don't have enough specific information for knowledge-base query, need relationship search
+   - **NOTE**: Relationship index uses different search strategy (fuzzy matching, relationship traversal)
    - Example: Query with defect="broken stitch" (100) and operation="join" (75)
    - Also applies if query has more than 2 node types but doesn't meet precise criteria
 
 4. **generic**:
-   - The query has NO registry matches
-   - BUT the query is still relevant to manufacturing/technical topics
-   - The query requests something related to manufacturing processes, technical specifications, quality control, production, etc.
+   - **QUERY STRATEGY**: No Elasticsearch query (or very generic query)
+   - **WHEN**: The query has NO registry matches BUT is still manufacturing/technical related
+   - **WHAT IT MEANS**: Query doesn't match registry, but is still relevant to manufacturing domain
    - Examples: "How do I check quality?", "What are manufacturing best practices?", "Show me production statistics"
-   - The query is technical/manufacturing-related but doesn't match specific registry items
    - If the query is vague, unclear, or not manufacturing-related, classify as "non-precise" instead
 
 Instructions:
@@ -143,6 +161,9 @@ Instructions:
      b) Current + Historical registry_matches (if historical adds missing node_types)
      c) Conversation context from thread_memory_summary
    - Choose the classification that best represents the complete query intent
+   - **CRITICAL**: If after merging you have all 4 node types (defect + operation + style + error), 
+     classify as "precise" (not "error-precise") because you have complete context for a precise query
+   - The classification should reflect the COMPLETE merged context, not just the current query
 
 5. **Registry Merge Decision - CRITICAL**:
    You must decide whether to merge historical_registry_matches with current registry_matches to create a `classification_registry`.

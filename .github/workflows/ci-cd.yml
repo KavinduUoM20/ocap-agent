@@ -1,0 +1,163 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ocap-agent:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ocap-agent:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ocap-agent:buildcache,mode=max
+
+      - name: Clean up old images
+        run: |
+          pip install requests -q
+          python3 << 'EOF'
+          import requests
+          import os
+          import base64
+          
+          username = os.environ['DOCKERHUB_USERNAME']
+          token = os.environ['DOCKERHUB_TOKEN']
+          repo = f"{username}/ocap-agent"
+          
+          auth = base64.b64encode(f"{username}:{token}".encode()).decode()
+          headers = {"Authorization": f"Basic {auth}"}
+          
+          url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100"
+          response = requests.get(url, headers=headers)
+          
+          if response.status_code == 200:
+              tags = response.json().get('results', [])
+              deleted = 0
+              for tag in tags:
+                  if tag['name'] != 'latest':
+                      delete_url = f"https://hub.docker.com/v2/repositories/{repo}/tags/{tag['name']}/"
+                      del_response = requests.delete(delete_url, headers=headers)
+                      if del_response.status_code in [200, 204]:
+                          deleted += 1
+              print(f"Cleaned up {deleted} old tag(s)")
+          elif response.status_code == 404:
+              print("Repository not found (first run), skipping cleanup")
+          else:
+              print(f"Cleanup skipped: {response.status_code}")
+          EOF
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          sudo apt-get update -qq
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${VPS_PORT:-22} $VPS_HOST >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config << EOF
+          Host vps
+            HostName $VPS_HOST
+            User $VPS_USER
+            Port ${VPS_PORT:-22}
+            IdentityFile ~/.ssh/id_rsa
+            IdentitiesOnly yes
+            StrictHostKeyChecking no
+          EOF
+          chmod 600 ~/.ssh/config
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+
+      - name: Create docker-compose.yml
+        run: |
+          cat > docker-compose.prod.yml << EOF
+          version: '3.8'
+
+          services:
+            app:
+              image: ${DOCKERHUB_USERNAME}/ocap-agent:latest
+              container_name: ocap-agent
+              ports:
+                - "8000:8000"
+              environment:
+                - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+                - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+                - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+                - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}
+                - REDIS_HOST=${REDIS_HOST}
+                - REDIS_PORT=${REDIS_PORT}
+                - REDIS_USERNAME=${REDIS_USERNAME:-default}
+                - REDIS_PASSWORD=${REDIS_PASSWORD}
+                - REDIS_DECODE_RESPONSES=${REDIS_DECODE_RESPONSES:-true}
+                - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
+                - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY}
+                - DB_URL=${DB_URL}
+                - SECRET_KEY=${SECRET_KEY}
+                - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+                - JAEGER_AGENT_HOST=${JAEGER_AGENT_HOST:-localhost}
+                - JAEGER_AGENT_PORT=${JAEGER_AGENT_PORT:-6831}
+                - JAEGER_COLLECTOR_ENDPOINT=${JAEGER_COLLECTOR_ENDPOINT:-http://localhost:4317}
+                - ENABLE_TRACING=${ENABLE_TRACING:-true}
+                - SERVICE_NAME=${SERVICE_NAME:-ocap-agent}
+              restart: unless-stopped
+          EOF
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+          REDIS_HOST: ${{ secrets.REDIS_HOST }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          REDIS_USERNAME: ${{ secrets.REDIS_USERNAME }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          REDIS_DECODE_RESPONSES: ${{ secrets.REDIS_DECODE_RESPONSES }}
+          ELASTICSEARCH_HOST: ${{ secrets.ELASTICSEARCH_HOST }}
+          ELASTICSEARCH_API_KEY: ${{ secrets.ELASTICSEARCH_API_KEY }}
+          DB_URL: ${{ secrets.DB_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ACCESS_TOKEN_EXPIRE_MINUTES: ${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}
+          JAEGER_AGENT_HOST: ${{ secrets.JAEGER_AGENT_HOST }}
+          JAEGER_AGENT_PORT: ${{ secrets.JAEGER_AGENT_PORT }}
+          JAEGER_COLLECTOR_ENDPOINT: ${{ secrets.JAEGER_COLLECTOR_ENDPOINT }}
+          ENABLE_TRACING: ${{ secrets.ENABLE_TRACING }}
+          SERVICE_NAME: ${{ secrets.SERVICE_NAME }}
+
+      - name: Copy docker-compose.yml to VPS
+        run: scp docker-compose.prod.yml vps:~/docker-compose.yml
+
+      - name: Deploy to VPS
+        run: |
+          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && docker-compose pull && docker-compose up -d && docker system prune -f"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
