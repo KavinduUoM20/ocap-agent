@@ -59,7 +59,7 @@ python -m app.main
 Or using uvicorn directly:
 ```bash
 uvicorn app.main:app --reload
-```
+``/
 
 The API will be available at:
 - API: http://localhost:8000

@@ -1,0 +1,14 @@
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git
+.github
+.env
+*.log
+.DS_Store
+*.swp
+*.swo
+*~
