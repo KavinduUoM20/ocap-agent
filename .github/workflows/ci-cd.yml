@@ -157,7 +157,7 @@ jobs:
 
       - name: Deploy to VPS
         run: |
-          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && docker-compose pull && docker-compose up -d && docker system prune -f"
+          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && docker compose pull && docker compose up -d && docker system prune -f"
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
