@@ -100,14 +100,12 @@ jobs:
       - name: Create docker-compose.yml
         run: |
           cat > docker-compose.prod.yml << EOF
-          version: '3.8'
-
           services:
             app:
               image: ${DOCKERHUB_USERNAME}/ocap-agent:latest
               container_name: ocap-agent
               ports:
-                - "8000:8000"
+                - "8001:8000"
               environment:
                 - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
                 - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
@@ -157,7 +155,7 @@ jobs:
 
       - name: Deploy to VPS
         run: |
-          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && docker compose pull && docker compose up -d && docker system prune -f"
+          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && (docker stop ocap-agent 2>/dev/null || true) && (docker rm ocap-agent 2>/dev/null || true) && docker compose -f ~/docker-compose.yml pull && docker compose -f ~/docker-compose.yml up -d && docker system prune -f"
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
