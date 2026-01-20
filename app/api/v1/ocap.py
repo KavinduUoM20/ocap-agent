@@ -1,11 +1,14 @@
 """OCAP processing endpoint."""
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from app.services.ocap_service import OCAPService
+from app.services.index_service import IndexService
 from app.core.dependencies import get_logger, get_current_active_user
 from app.models.user import User
 import logging
+import tempfile
+import os
 
 router = APIRouter()
 
@@ -40,6 +43,15 @@ class QueryResponse(BaseModel):
     message: str
 
 
+class IndexCreationResponse(BaseModel):
+    """Response model for index creation."""
+    status: str
+    message: str
+    fact_index: str
+    relationship_index: str
+    records_processed: int
+
+
 @router.post("/process", response_model=QueryResponse)
 async def process_query(
     request: QueryRequest,
@@ -72,4 +84,79 @@ async def process_query(
     )
     
     return QueryResponse(**result)
+
+
+@router.post("/create-index", response_model=IndexCreationResponse)
+async def create_index(
+    file: UploadFile = File(..., description="XLSX file to create indexes from"),
+    current_user: User = Depends(get_current_active_user),
+    logger: logging.Logger = Depends(get_logger)
+):
+    """
+    Create Elasticsearch indexes from an uploaded XLSX file.
+    
+    This endpoint:
+    1. Reads the XLSX file
+    2. Transforms and cleans the data
+    3. Creates the fact layer index (ocap-knowledge-base)
+    4. Creates the relationship index (ocap-relationship-index)
+    
+    Requires authentication via JWT token.
+    
+    Args:
+        file: XLSX file containing OCAP data with columns: Style, Defect, Operation, Error, Action
+        current_user: Current authenticated user
+        logger: Logger instance
+        
+    Returns:
+        Index creation response with status and details
+    """
+    # Validate file type
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be an Excel file (.xlsx or .xls)"
+        )
+    
+    logger.info(
+        f"Received index creation request from user {current_user.username} "
+        f"(user_id: {current_user.id}) for file: {file.filename}"
+    )
+    
+    # Save uploaded file to temporary location
+    temp_file = None
+    try:
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            temp_file = tmp.name
+            # Read file content
+            content = await file.read()
+            tmp.write(content)
+        
+        # Create indexes using the service
+        service = IndexService()
+        result = service.create_indexes_from_excel(temp_file)
+        
+        logger.info(
+            f"Indexes created successfully by user {current_user.username}. "
+            f"Fact index: {result['fact_index']}, "
+            f"Relationship index: {result['relationship_index']}, "
+            f"Records processed: {result['records_processed']}"
+        )
+        
+        return IndexCreationResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Error creating indexes: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating indexes: {str(e)}"
+        )
+    finally:
+        # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.unlink(temp_file)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {temp_file}: {e}")
 
