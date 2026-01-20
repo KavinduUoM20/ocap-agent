@@ -30,7 +30,9 @@ class ElasticsearchClient:
         try:
             cls._instance = Elasticsearch(
                 settings.elasticsearch_host,
-                api_key=settings.elasticsearch_api_key
+                api_key=settings.elasticsearch_api_key,
+                verify_certs=False,  # Disable SSL certificate verification for self-signed certs
+                ssl_show_warn=False  # Suppress SSL warnings
             )
             # Test connection
             cls._instance.info()
