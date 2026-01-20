@@ -101,7 +101,7 @@ class IndexService:
                     "operation": {"type": "keyword"},
                     "error": {"type": "keyword"},
                     "action": {"type": "text"},
-                    "content": {"type": "semantic_text"}
+                    "content": {"type": "text"}
                 }
             }
         )
