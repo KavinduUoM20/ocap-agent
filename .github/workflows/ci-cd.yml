@@ -127,6 +127,18 @@ jobs:
                 - ENABLE_TRACING=${ENABLE_TRACING:-true}
                 - SERVICE_NAME=${SERVICE_NAME:-ocap-agent}
               restart: unless-stopped
+              networks:
+                - nginx-proxy-manager_default
+                - jaeger_jaeger-example
+                - elastic
+          
+          networks:
+            nginx-proxy-manager_default:
+              external: true
+            jaeger_jaeger-example:
+              external: true
+            elastic:
+              external: true
           EOF
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -155,7 +167,7 @@ jobs:
 
       - name: Deploy to VPS
         run: |
-          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && (docker stop ocap-agent 2>/dev/null || true) && (docker rm ocap-agent 2>/dev/null || true) && docker compose -f ~/docker-compose.yml pull && docker compose -f ~/docker-compose.yml up -d && docker network connect nginx-proxy-manager_default ocap-agent 2>/dev/null || true && docker network connect jaeger_jaeger-example ocap-agent 2>/dev/null || true && docker network connect elastic ocap-agent 2>/dev/null || true && docker system prune -f"
+          ssh vps "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin && (docker stop ocap-agent 2>/dev/null || true) && (docker rm ocap-agent 2>/dev/null || true) && docker compose -f ~/docker-compose.yml pull && docker compose -f ~/docker-compose.yml up -d && docker restart ocap-agent && docker system prune -f"
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
